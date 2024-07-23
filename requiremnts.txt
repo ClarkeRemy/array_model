@@ -1,0 +1,368 @@
+https://code.jsoftware.com/wiki/Vocabulary/FramingFill
+https://code.jsoftware.com/wiki/Vocabulary/slash#:~:text=Identity%20Elements%20(Neutrals)
+https://www.jsoftware.com/help/jforc/empty_operands.htm#_Toc191734375
+
+verbs conform like the following:
+
+NB. the fields may actually be traits
+M_Verb {rank: usize}
+D_Verb {rank:     [usize,2] NB. left right
+        identity_right: Array              NB. required for right fold (_InsertR)
+        identity_left:  Array              NB. required for left  fold (_ReduceL)  NB. to be implemented later 
+                                           NB. If they wish to fold but do not have n identity element,
+                                           NB.   default to a panic!{"Identity not defined for {Verb}"}
+                                           NB. if they are equal, it is a two-sided identity
+        insert_cast: fn(InputType)->Output type
+                                           NB. This happens when shape[..1].product()==1
+       }
+
+Monadic verb where y:Array<T>
+VR:isize =. rank
+
+S  =. y.shape_slice
+D  =. y.data_slice
+FP =. match rank { len..=MAX    => 0, 
+                   MIN..=(-len) => len, 
+                   _            => (len-rank)%len } as usize
+
+        NB. [ | | | | ]< frame scalar (rank 0)     shape[0..len  ] : Cell shape[len  ..len]
+        NB. [ | | | |<]  frame vector (rank 1)     shape[0..len-1] :           [len-1..len]
+        NB. [ |<| | | ]  frame rank -1             shape[0..1    ] :           [1    ..len]
+        NB. [<| | | | ]  frame rank MAX            shape[0..0    ] :           [0    ..len]
+        NB. [ | | | | ]< frame rank MIN (negative) shape[0..len  ] :           [len  ..len]
+
+
+CellShape =. &S[ FP.. ]
+Frame     =. &S[ ..FP ]
+
+NB. Framed Array
+FA =. { Frame:     &[usize]  =. Frame      NB. Frame.product() == number of cells
+        CellShape: &[usize]  =. CellShape
+        Data:      &[T]      =. D
+      }
+
+
+FPR =. Frame.product()
+CL =. CellShape.product()
+mut EndCells = Vec::with_capacity(FPR)
+
+for fr in 0..FPR { FI=.fr*CL; EndCells.push( raw_verb(CellShape,&Data[FI..FI+CL]) ) }
+
+raw_verb(FA)  NB. loop over each Cell, using CellShape and Frame.prod() to calculate each
+              NB. observe what was done for dyadic verbs  
+
+-> FramedResults<G> : { Frame: [usize] =. Frame, Data: [Array<G>] =. EndCells } NB. this could be an array type, or two Vecs
+
+
+
+
+Dyadic verb where x:Array<T>, y:Array<G> and returns Result<type>
+[ frame:prefix->scalar extention | VerbCell ]
+
+VR:[isize;2] =. rank
+
+FL=. framed(x, VR[0]) NB. look at monadic for details
+FR=. framed(y, VR[1])
+
+(Prefix,EndFrame) = if frame.len.less_than(FL,FR) {(FL.frame, FR.frame)} else {(FR.frame,FL.frame)}
+                                                               NB. if scalar extention, Prefix == []
+                                                               NB.   EndFrame will still be valid
+for idx in 0..prefix.len() { if Prefix[idx] != EndFrame[idx] {return RANK_ERROR("Prefix agreement failed after Framing Arguments")} }
+
+NB. if prefix agreement works we can safely then continue with "scalar extension"/"rank extention"
+
+NB. prefix agreeing framed arrays
+PAFA =.
+{ Prefix     =. Prefix
+  EndFrame   =. EndFrame
+
+  MidL       =. &FL.frame[Prefix.len()..]
+  MidR       =. &FR.frame[Prefix.len()..]
+
+  CellShapeL =. FL.cell_shape
+  CellShapeR =. FR.cell_shape
+
+  DataL  =. FL.data
+  DataR  =. FR.data
+}
+
+EndCellsCount    =. EndFrame.prod()
+mut EndCells =. Vec::with_capacity(EndCellsCount)
+
+(MLP, MRP)  =. ( MidL.product(), MidR.product() )             NB. Mid Left/Right Product
+                                                              NB.   if scalar extention only, (FL.frame.product(), FR.frame.product())
+
+(CLL, CRL)  =. ( CellShapeL.product(), CellShapeR.product() ) NB. Cell Left/Right Len
+                                                              NB.   with scalar extention only, we can just use CLL and CRL
+(PCLL,PCRL) =. (MLP*CLL, MRP*CRL)                             NB. Prefix Cell Left/Right Len
+
+
+proc =. |L,R| EndCells.push( raw_verb(CellShapeL,CellShapeR, &DataL[L..L+CLL], &DataR[R..R+CRL]) 
+for pre in 0..Prefix.prod() {let (PIL,PIR)=(pre*PCLL, pre*PCRL)  NB.  Prefix Index Left/Right
+                                                                 NB.    if scalar extention only, skip
+  if MLP==1 {for mri in 0..MRP { let DR = PIR + mri*CRL; proc(PIL,DR ) }}  NB. if scalar only, PIR == 0
+  else      {for mli in 0..MLP { let DL = PIL + mli*CLL; proc(DL ,PIR) }}  NB.    "  "         PIL == 0
+}
+
+
+-> FramedResults<G> : { Frame: [usize] =. EndFrame, Data: [Array<G>] =. EndCells } NB. this could be an array type, or two Vecs
+
+
+
+Rank: rank could be implemented in two ways
+
+Either monadic rank and dyadic rank are separate.
+OR
+Something sophisticated where there is always one argument.
+
+monadic rank
+u:verb_monadic _RankM_ n:isize
+|y|{ 
+  Framed =. frame(y, n) 
+  
+  (FL,CL)           =. ( Framed.frame.product(), Framed.cell_shape.product() )
+  
+  mut EndCells =. Vec::with_capacity(FL)
+  for idx in 0..FL { Pos=idx*CL ; EndCells.push(u(Framed.cell_shape, &Framed.data[Pos..Pos+CL ] )) }
+
+  FramedResults<G> : { Frame: [usize] =. Framed.frame, Data: [Array<G>] =. EndCells }
+}
+
+dyadic rank
+u:verb_dyadic _RankD_ n:[isize;2]
+|x,y|{
+  FramedL =. frame(x, n[0])
+  FramedR =. frame(y, n[1])
+
+NB. refer to dyadic verb  
+
+proc =. |L, R| EndCells.push( u( ArraySlices{shape: FramedL.cell_shape, data: &FramedR.data[L..L+CLL]},
+                                 ArraySlices{shape: FramedR.cell_shape, data: &FramedR.data[R..R+CLL]} ) )
+NB. refer to dyadic verb
+prefix_loop => scalar_extention_loop => call_proc
+}
+
+u:verb_dyadic _InsertR -> verb_monadic   NB. right to left, _InsertL can be implemented similarly
+                                         NB. _InsertR has rank MAX
+              
+|y| {
+  ItemShape   =. &y.shape_slice[1..]
+  ItemLen     =. ItemShape.product()
+  mut Count   =. if y.shape_slice.len() == 0 {1} else { y.shape_slice[..1].product() }
+  if Count == 0 {return  Array::scalar_extend{ItemShape ,u.identity_right()} NB. this could panic if identity is unavailible
+                                                                             NB. flat array assuming u is flat
+
+  mut acc     =. Arr{ Shape =. ItemShape, Data =. &y.data[ItemLen*(Count-1) .. ] }
+  mut ReturnVal : UReturnType ; 
+
+debug_assert!{ Count != 0}
+  match Count {
+    1 => {return u.insert_cast(Array::owned(acc))}  
+    _ => { loop {
+      Count -= 1
+      CellEnd =. ItemLen*Count
+      ReturnVal = u( { Shape =. ItemShape, Data =. &y.data[ (CellEnd - ItemLen)..CellEnd ] } ,acc )
+      if Count == 1 {return ReturnVal}
+      acc = { Shape =. ReturnVal.shape_slice, Data =. ReturnVal.data_slice }
+    }}  
+  }  
+} 
+
+
+u:verb_dyadic _Table -> verb_dyadic
+                                    NB. _Table has rank MAX
+|x,y| {
+  FramedL =. frame(x, u.rank[0])
+  FramedR =. frame(x, u.rank[1])
+
+  tally_Shape=. |a| if a.shape_slice.len() == 0 {(1,&[])} else {[a.shape_slice[0], &a.shape_slice[1..] ]}
+  [(TallyL, CellShapeL)],(TallyR,CellShapeR)] =. [ FramedL, FramedR ] .map(tally_len)
+  EndFrame =. &[TallyL, TallyR]
+  mut EndCells =. Vec.with_capacity(TallyL*TallyR)
+    
+
+  [CLL,CLR] =. [CellShapeL, CellShapeR].map(product)
+
+  for i in 0..TallyL { PosL= i*CLL
+    for j in 0..TallyR {
+      PosR =. j*CLR 
+      EndCells.push(u( CellShapeL, FramedL.data[PosL..PosL+CLL] , CellShapeR, FramedR.data[PosR..PosR+CLR] ))
+  }}
+
+
+  FramedResults<G> {Frame =. EndFrame, Data =. EndCells}
+}
+
+
+
+u:verb_monadic _Prefix -> verb_monadic  NB. has rank MAX
+|y| {
+  NB.   $ ]\ '' NB. this case needs to be reviewed carefully
+  NB. 0 0
+  NB.    $ ]\ 0 0$0
+  NB. 0 0 0
+  NB.    $ ]\ 0 1$0
+  NB. 0 0 1
+  NB.   $ ]\ 'a'
+  NB. 1 1
+  NB.   <@$\ 'a'
+  NB. ┌─┐
+  NB. │1│
+  NB. └─┘
+
+  NB. guard that ensures scalars are made into vectors first
+  if y.shape_slice.len() == 0 {
+    return FramedResults<G>{Shape =. &[1], Data =. vec![u({Shape =.&[1], Data =.y.data_slice})] }
+  }
+  if y.shape_slice[0] == 0 { FramedResults{ Frame=.  , Data=. vec!( u({Shape=. y.shape_slice ,Data=.&[]}}) )}
+
+
+
+  (Tally, ItemLen) =. (y.shape[0], &y.shape_slice[1..].product())
+  mut EndCells  =. Vec::with_capacity( Tally )
+  mut ItemShape =. Vec::from( y.shape_slice )  
+
+  for idx in 0..=Tally{
+    ItemShape[0]=idx+1
+    EndCells.push( u({Shape =. ItemShape.as_ref(), Data=. &y.data_slice[0..(idx+1)*ItemLen]}) )
+  }
+
+  FramedResults<G> {Shape =. &[Tally],  Data =.  EndCells }
+  NB. FramedResults cannot be a true array like a J Box Array, because  if the frame is 0, that does not mean 
+  NB.   the elements can be ignored, they may hold shape data?
+
+}
+NB. /\ will have an _Scan implementation too for performance
+
+
+u:verb_monadic _Infix ->  verb_dyadic(x: Array<Isize>,Array<T>) NB. has rank [0, MAX]
+NB. be very careful, this is defined without prefix_agreement
+|x,y| {
+
+  NB. I assume these are weird becuse they aren't numeric, so e will not implement it this way
+  NB.    $ '' ]\ 0 1 3
+  NB. 0
+  NB.    $ (0$'') ]\ 0 1 3
+  NB. 0
+
+  NB. the behavior will follow this pattern
+  NB.    $(0$0) ]\ 0 1 3
+  NB. 0 4 0
+  NB.    $(0$0) <@]\ 0 1 3
+  NB. 0 4
+  NB.    $(0$0) <@(]\) 0 1 3
+  NB. 0
+
+  if x.shape_slice.product() == 0 {
+    return  FramedResults{ Frame=.&[ y.tally() + 1], 
+    Data=. Vec::with_capacity(y.tally()+1).map_each(|x| u( &[0], &[]}) ) }
+  }
+
+  NB. if the operator does not assume prefix agreement then x is just a scalar
+  debug_assert!{x.is_scaler}
+  mut L =. x.data_slice[0]
+  (mut EndData ,mut T)
+  ItemShape =. Y.Item_shape()
+
+  if L >= 0 {
+    T = y.tally() + 1 - L 
+    if T < 0 { return FramedResults{Frame =. &[0,L], Data =. &[] }}
+    EndData = Vec::with_capacity( T )
+    InfixSlice =. Vec::with_capacity(1+Item_shape.len()).push(T).append(ItemShape)
+    IL =. ItemShape.product()
+    for idx in 0..T { EndData.push( u( InfixSlice.as_ref() , &y.data_slice[idx*IL .. (idx+1)*IL] ) ) }
+    return FramedResults{ Frame=. &[T], Data =. EndData }
+  }
+  else {
+    L  = L.abs()
+    YT =.  y.tally()
+  
+    NB.    $_2 ]\ 0 6 3$1
+    NB. 0 0 6 3
+    if YT == 0 { return FramedResults{Frame =. vec![0].append(y.shape_slice), Data =. &[] }}
+  
+    debug_assert!{ L != 0 }
+    [mut Loops,Rem] =. YT.floor_div(L), YT.mod(L)]
+    EndData = Vec::with_capacity( T )
+  
+    mut InfixSlice =. Vec::with_capacity(1+Item_shape.len()).push(T).append(ItemShape)
+    mut ISL =. InfixSlice.product()
+    for idx in 0..Loops { EndData.push( u( InfixSlice.as_ref(), y.data_slice[idx*ISL .. (idx+1)*ISL ] ) ) }
+    NB. effectively the following is the last iteration of the loop
+    if Rem !=0 {  
+      InfixSlice[0] = Rem
+      Loops += 1
+      ISL = InfixSlice.product()
+      EndData.push( u( InfixSlice.as_ref(), y.data_slice[Loops*ISL .. ]  ) )
+    }
+    return FramedResults{ Frame=. &[Loops], Data =. EndData }
+  
+  }
+}
+
+u:verb_monadic _Oblique -> verb_monadic
+|y| {
+  NB.    $</. ''
+  NB. 0
+  NB.    $</. 4 4 0$0
+  NB. 7
+  NB.    $</. 4 0$0
+  NB. 0
+  NB.    </. 1 2 3 4
+  NB. ┌─┬─┬─┬─┐
+  NB. │1│2│3│4│
+  NB. └─┴─┴─┴─┘
+  NB.    <@$/. 1 2 3 4
+  NB. ┌─┬─┬─┬─┐
+  NB. │1│1│1│1│
+  NB. └─┴─┴─┴─┘
+  if y.is_scaler() { return FramedResults{ Frame=. &[], Data=. u( &[], y.data_slice.to_owned ) }
+    mut L
+    mut CollectResults
+  if y.rank() == 1 {
+    L = y.shape_slice
+    CollectResults = Vec::with_capacity( L )
+    for 0..L {CollectResults.push( u(&[1], &y.data_slice[L..L+1]) )} 
+    return FramedResults{ Frame=. &[L], Data=. CollectResults} 
+  }
+  
+  NB. from here on, everything must be bigger than rank 2
+  debug_assert!{y.rank()>2}
+
+  if y.shape_slice[0]*x.shape_slice[1] == 0 {
+    ItemShape =. Vec::with_capacity(y.rank()-1)
+    Item_shape.push(0)
+    if y.rank()-1 >2 { Item_shape.append(&y.shape_slice[2..y.rank()]) }
+    CollectResults = vec![u( Item_shape.as_ref(), &[] )]
+    return FramedResults{Frame=. &[0], Data=.CollectResults }
+  }
+
+  NB.    </. {;~i.3
+  NB. ┌─────┬─────────┬─────────────┬─────────┬─────┐
+  NB. │┌───┐│┌───┬───┐│┌───┬───┬───┐│┌───┬───┐│┌───┐│
+  NB. ││0 0│││0 1│1 0│││0 2│1 1│2 0│││1 2│2 1│││2 2││
+  NB. │└───┘│└───┴───┘│└───┴───┴───┘│└───┴───┘│└───┘│
+  NB. └─────┴─────────┴─────────────┴─────────┴─────┘
+  NB.    NB. note that the indicies sum to 0 1 2 3 4 or i. L
+
+  ItemLen =. (&y.shape_slice[1..]).product()  
+  2_CellCount =.y.shape_slice[0] * y.shape_slice[1] 
+  2_CellShape =. if y.rank() == 2 {&[]} else {&y.shape_slice[2..y.rank()]}
+  2_CellDataLen =. 2_CellShape.product()
+  mut TmpData =. Vec::with_capacity( 2_CellCount ) 
+
+  L = y.shape_slice[0]+y.shape_slice[1]-1
+  CollectResults = Vec::with_capacity(L)
+
+  for idx in 0 .. L {
+    mut [i,j] =. [0,idx]
+    loop {
+      x=.i*ItemLen + j*2_CellDataLen
+      TmpData.push_slice( y.data_slice[x..x+2_CellDataLen] )
+      if i == j { break }
+      i += 1 ; j -= 1
+    }
+  }
+
+
+}
